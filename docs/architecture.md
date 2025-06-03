@@ -374,6 +374,8 @@ Each tool is a self-contained asynchronous worker with standardized message-base
 * **Project Structure (Microservices Focus):**
     ```
     /devfusion_ai_platform
+        /config
+           config.dev.yaml
         /services
             /task_orchestrator_service
             /capabilities_engine_service
@@ -398,8 +400,8 @@ Each tool is a self-contained asynchronous worker with standardized message-base
             /integration
             /component
         docker-compose.yml
-        Makefile
-        README.md
+        requirements.txt
+        .gitignore
     ```
 * **Containerization & Orchestration:** Docker for each service. `docker-compose` for local dev. Kubernetes (or similar) for staging/production.
 * **CI/CD:** Robust CI/CD pipelines for each service (testing, linting, security scanning, image building, deployment).

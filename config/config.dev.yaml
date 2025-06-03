@@ -1,0 +1,7 @@
+global_settings:
+  log_level: INFO
+llm_abstraction_service:
+  default_provider: ollama
+  ollama_url: http://localhost:11434
+task_orchestrator_service:
+  max_concurrent_tasks: 10
