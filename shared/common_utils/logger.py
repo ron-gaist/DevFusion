@@ -14,7 +14,7 @@ class SingletonMeta(type):
             instance = super().__call__(*args, **kwargs)
             cls._instance[cls] = instance
         return cls._instance[cls]
-    
+
 
 class DevFusionLogger(Logger, metaclass=SingletonMeta):
     correlation_id_var = ContextVar("correlation_id", default=None)
@@ -23,20 +23,20 @@ class DevFusionLogger(Logger, metaclass=SingletonMeta):
     def __init__(self):
         if DevFusionLogger._initialized:
             return
-        
+
         super().__init__(name="DevFusionLogger", level=environ.get("LOG_LEVEL", NOTSET))
 
         Formatter.converter = self.israel_time
         local_formatter = ColoredFormatter(
-            '%(log_color)s%(asctime)s | %(levelname)s | %(msg)s',
-            datefmt='%d-%m-%Y, %H:%M:%S',
+            "%(log_color)s%(asctime)s | %(levelname)s | %(msg)s",
+            datefmt="%d-%m-%Y, %H:%M:%S",
             log_colors={
                 "DEBUG": "blue",
                 "INFO": "",
                 "WARNING": "yellow",
                 "ERROR": "red",
-                "CRITICAL": "bold_red"
-            }
+                "CRITICAL": "bold_red",
+            },
         )
 
         console_handler = StreamHandler()
@@ -45,7 +45,6 @@ class DevFusionLogger(Logger, metaclass=SingletonMeta):
 
         DevFusionLogger._initialized = True
 
-
     def set_correlation_id(self, correlation_id: int) -> None:
         self.correlation_id_var.set(correlation_id)
 
@@ -53,6 +52,7 @@ class DevFusionLogger(Logger, metaclass=SingletonMeta):
         return self.correlation_id_var.get()
 
     def israel_time(self, *args):
-        return datetime.now(tz=ZoneInfo('Asia/Jerusalem')).timetuple()
+        return datetime.now(tz=ZoneInfo("Asia/Jerusalem")).timetuple()
+
 
 logger = DevFusionLogger()

@@ -3,46 +3,57 @@ import os
 
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from shared.common_utils import logger
 
-CONFIG_DIR = os.getenv('DEVFUSION_CONFIG_DIR', os.path.join(os.path.dirname(__file__), '..', '..', 'config'))
-DEFAULT_CONFIG_FILENAME = 'config.dev.yaml'
-CONFIG_FILE_PATH = os.getenv('DEVFUSION_CONFIG_PATH', os.path.join(CONFIG_DIR, DEFAULT_CONFIG_FILENAME))
+CONFIG_DIR = os.getenv(
+    "DEVFUSION_CONFIG_DIR",
+    os.path.join(os.path.dirname(__file__), "..", "..", "config"),
+)
+DEFAULT_CONFIG_FILENAME = "config.dev.yaml"
+CONFIG_FILE_PATH = os.getenv(
+    "DEVFUSION_CONFIG_PATH", os.path.join(CONFIG_DIR, DEFAULT_CONFIG_FILENAME)
+)
 
 _config: Dict[str, Any] = {}
+
 
 def load_config(config_path: str = CONFIG_FILE_PATH) -> None:
     global _config
     resolved_config_path = os.path.abspath(config_path)
 
     try:
-        with open(resolved_config_path, 'r') as f:
+        with open(resolved_config_path, "r") as f:
             _config = yaml.safe_load(f)
         print(f"Configuration loaded from {resolved_config_path}")
     except FileNotFoundError:
-        print(f"WARNING: Configuration file not found at {resolved_config_path}. Using empty config.")
+        print(
+            f"WARNING: Configuration file not found at {resolved_config_path}. Using empty config."
+        )
         _config = {}
     except yaml.YAMLError as e:
         print(f"ERROR: Could not parse configuration file {resolved_config_path}: {e}")
         _config = {}
 
+
 def get_config(service_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Returns the configuration for a specific service or the global config.
     """
-    if not _config: # Ensure config is loaded at least once
-        load_config() # Will use the default path logic
+    if not _config:  # Ensure config is loaded at least once
+        load_config()  # Will use the default path logic
 
     if service_name:
         return _config.get(service_name, {})
     return _config
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     # For testing, ensure a dummy config exists at the expected default path
     # This example assumes the 'config' dir is two levels up from this script, then in 'config/'
-    test_config_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'config')
+    test_config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "config")
     os.makedirs(test_config_dir, exist_ok=True)
     test_config_file = os.path.join(test_config_dir, DEFAULT_CONFIG_FILENAME)
 
@@ -51,14 +62,14 @@ if __name__ == '__main__':
         "task_orchestrator_service": {"max_concurrent_tasks": 10},
         "llm_abstraction_service": {
             "default_provider": "ollama",
-            "ollama_url": "http://localhost:11434"
-        }
+            "ollama_url": "http://localhost:11434",
+        },
     }
-    with open(test_config_file, 'w') as f:
+    with open(test_config_file, "w") as f:
         yaml.dump(dummy_config_content, f)
 
     # Test loading with default path logic
-    load_config() # Should find it in ../../config/config.dev.yaml relative to this script's dir
+    load_config()  # Should find it in ../../config/config.dev.yaml relative to this script's dir
     logger.info("Global Config:", get_config())
     logger.info("Task Orchestrator Config:", get_config("task_orchestrator_service"))
 
@@ -71,7 +82,6 @@ if __name__ == '__main__':
     # _config = {} # Reset to force reload
     # load_config()
     # print("\nCustom Config via ENV:", get_config())
-
 
     # Clean up dummy file (optional)
     # os.remove(test_config_file)

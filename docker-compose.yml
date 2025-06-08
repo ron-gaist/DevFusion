@@ -18,5 +18,52 @@ services:
       timeout: 10s
       retries: 5
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: devfusion_postgres
+    environment:
+      POSTGRES_DB: devfusion
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./shared/db_models/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  task_orchestrator:
+    build:
+      context: .
+      dockerfile: services/task_orchestrator_service/Dockerfile
+    container_name: devfusion_task_orchestrator
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - SERVICE_VERSION=1.0.0
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=devfusion
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./services/task_orchestrator_service:/app/services/task_orchestrator_service
+      - ./shared:/app/shared
+    networks:
+      - devfusion_network
+
 volumes:
   rabbitmq_data: # Persists RabbitMQ data across container restarts
+  postgres_data: # Persists PostgreSQL data across container restarts
+
+networks:
+  devfusion_network:
+    driver: bridge

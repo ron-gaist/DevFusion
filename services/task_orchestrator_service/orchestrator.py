@@ -1,168 +1,320 @@
 import asyncio
+import json
+from datetime import datetime, UTC
+from typing import Any, Dict, Optional, List
 
-from typing import Any, Dict, Optional
-from services.config_manager_service import get_config
-from shared.message_schemas.task_schemas import NewTaskMessage, TaskStatusUpdateMessage
-from shared.common_utils import logger
+from pydantic import BaseModel, Field
 
-# Placeholder for a potential database interface (we'll define this later)
-class DBInterfacePlaceholder:
-    async def save_task_record(self, task_record: Dict[str, Any]) -> None:
-        logger.info(f"DB_INTERFACE (Orchestrator): Saving task record: {task_record}")
-        # In a real scenario, this would be an async DB call
-        await asyncio.sleep(0.1)
-
-    async def update_task_status(self, task_id: str, status: str, details: Optional[Dict[str, Any]] = None) -> None:
-        logger.info(f"DB_INTERFACE (Orchestrator): Updating task {task_id} to status {status}, Details: {details}")
-        await asyncio.sleep(0.1)
-
-    async def get_task_record(self, task_id: str) -> Optional[Dict[str, Any]]:
-        logger.info(f"DB_INTERFACE (Orchestrator): Getting task record for {task_id}")
-        # Simulate fetching a task
-        await asyncio.sleep(0.1)
-        # Return a dummy record for now if needed for logic
-        return {"task_id": task_id, "status": "UNKNOWN", "user_id": "mock_user"}
+from shared.common_utils import RabbitMQClient, logger
+from shared.message_schemas.task_schemas import TaskStatusUpdateMessage
+from shared.db_models.task_models import TaskRecord
+from shared.db_models.db_interface import DatabaseInterface
+from shared.common_utils.context_manager import ContextManager
+from shared.common_utils.saga_manager import SagaManager, SagaStep
+from env_settings import (
+    SERVICE_NAME,
+    SERVICE_VERSION,
+    RABBITMQ_URL,
+    RABBITMQ_EXCHANGE,
+    RABBITMQ_QUEUE,
+    RABBITMQ_BINDING_KEYS,
+    TaskStatus,
+    TaskPriority,
+    MAX_CONCURRENT_TASKS,
+    TASK_TIMEOUT,
+    DB_HOST,
+    DB_PORT,
+    DB_NAME,
+    DB_USER,
+    DB_PASSWORD,
+)
 
 
 class TaskOrchestratorService:
+    """Service for orchestrating task execution and management."""
+
     def __init__(self):
-        self.service_name = "task_orchestrator_service"
-        self.config = get_config(self.service_name)
-        # In a real setup, initialize message broker producer/consumer here
-        self.message_broker_client = None # Placeholder for now
-        self.db_interface = DBInterfacePlaceholder() # Placeholder for DB interactions
-        self.capabilities_engine_client = None # Placeholder for communication with Capabilities Engine
+        """Initialize the service."""
+        self.service_name = SERVICE_NAME
+        self.version = SERVICE_VERSION
 
-        logger.info(f"{self.service_name} initialized with config: {self.config}")
-        logger.info("Task Orchestrator Service is ready to manage task lifecycles.")
-
-    async def handle_new_task_message(self, message_content: NewTaskMessage) -> None:
-        """
-        Handles a new task message, typically from the UI Backend via the message broker.
-        """
-        logger.info(f"ORCHESTRATOR: Received new task: {message_content}")
-
-        # 1. Persist initial TaskRecord
-        task_record = {
-            "task_id": message_content.task_id,
-            "user_id": message_content.user_id,
-            "task_description": message_content.task_description,
-            "status": "RECEIVED", # Initial state
-            "metadata": message_content.metadata,
-            "created_at": asyncio.get_event_loop().time(), # Or use datetime
-            "updated_at": asyncio.get_event_loop().time(),
-            "execution_plan_id": None, # To be filled by Capabilities Engine
-            "saga_state": "NOT_STARTED" # For Saga pattern
-        }
-        await self.db_interface.save_task_record(task_record)
-        logger.info(f"ORCHESTRATOR: Task {message_content.task_id} saved with status RECEIVED.")
-
-        # 2. Publish TaskStatusUpdate (optional, UI backend might infer from ack or a direct response)
-        # status_update = TaskStatusUpdateMessage(task_id=message_content.task_id, status="RECEIVED")
-        # await self.publish_to_message_broker('task_status_updates', status_update)
-
-        # 3. Initiate task with Agent Capabilities Engine
-        # This would involve sending a message to the Capabilities Engine.
-        # For now, we'll just log it.
-        logger.info(f"ORCHESTRATOR: Initiating task {message_content.task_id} with Agent Capabilities Engine.")
-        # In a real system:
-        # await self.capabilities_engine_client.request_task_planning(message_content.task_id, message_content.task_description)
-        await self.update_task_status(message_content.task_id, "PLANNING_QUEUED", {"message": "Sent to Capabilities Engine for planning."})
-
-
-    async def update_task_status(self, task_id: str, new_status: str, details: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Updates the status of a task and publishes this update.
-        This might be called internally or by other services (e.g., Capabilities Engine notifying of progress).
-        """
-        logger.info(f"ORCHESTRATOR: Updating task {task_id} to status '{new_status}'. Details: {details}")
-        await self.db_interface.update_task_status(task_id, new_status, details)
-
-        # Publish status update to message broker for UI and other interested services
-        status_update_message = TaskStatusUpdateMessage(
-            task_id=task_id,
-            status=new_status,
-            details=details
+        # Initialize components
+        self.rabbitmq_client = RabbitMQClient(
+            service_name=self.service_name,
+            rabbitmq_url=RABBITMQ_URL,
+            version=self.version,
         )
-        # await self.publish_to_message_broker('task_status_updates', status_update_message)
-        logger.info(f"ORCHESTRATOR: Published status update for {task_id}: {status_update_message}")
+        self.db = DatabaseInterface(
+            {
+                "host": DB_HOST,
+                "port": DB_PORT,
+                "database": DB_NAME,
+                "user": DB_USER,
+                "password": DB_PASSWORD,
+            }
+        )
+        self.context_manager = ContextManager()
+        self.saga_manager = SagaManager()
+
+        # Task management
+        self.active_tasks: Dict[str, TaskRecord] = {}
+        self._task_lock = asyncio.Lock()
+        self._task_timeouts: Dict[str, asyncio.Task] = {}
+        self._priority_queues: Dict[int, List[str]] = {
+            TaskPriority.LOW: [],
+            TaskPriority.MEDIUM: [],
+            TaskPriority.HIGH: [],
+            TaskPriority.CRITICAL: [],
+        }
+
+        logger.info(f"{self.service_name} v{self.version} initialized")
+
+    async def start(self):
+        """Start the service and establish connections."""
+        try:
+            # Connect to database
+            await self.db.connect()
+
+            # Load active tasks from database
+            active_tasks = await self.db.get_active_tasks()
+            for task in active_tasks:
+                self.active_tasks[task.task_id] = task
+                # Restore timeouts for active tasks
+                if task.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                    self._task_timeouts[task.task_id] = asyncio.create_task(
+                        self._handle_task_timeout(task.task_id)
+                    )
+
+            # Start consuming messages
+            await self.rabbitmq_client.start_consuming(
+                queue_name=RABBITMQ_QUEUE,
+                on_message_callback=self._handle_new_task,
+                exchange_name=RABBITMQ_EXCHANGE,
+                binding_keys=RABBITMQ_BINDING_KEYS,
+            )
+
+            logger.info(f"{self.service_name} v{self.version} started successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to start service: {str(e)}")
+            raise
+
+    async def stop(self):
+        """Stop the service and close connections."""
+        try:
+            # Cancel all task timeouts
+            for timeout_task in self._task_timeouts.values():
+                timeout_task.cancel()
+
+            # Close connections
+            await self.rabbitmq_client.close()
+            await self.db.close()
+
+            logger.info(f"{self.service_name} stopped successfully")
+        except Exception as e:
+            logger.error(f"Error stopping service: {str(e)}")
+            raise
+
+    async def _handle_new_task(self, message):
+        """Handle incoming new task messages."""
+        async with message.process():
+            try:
+                # Parse task data
+                task_data = json.loads(message.body.decode())
+                task = TaskRecord(**task_data)
+
+                # Check if we can accept more tasks
+                if len(self.active_tasks) >= MAX_CONCURRENT_TASKS:
+                    logger.warning(
+                        "Maximum concurrent tasks reached, rejecting new task"
+                    )
+                    await message.nack(requeue=True)
+                    return
+
+                async with self._task_lock:
+                    # Store task in database
+                    task = await self.db.create_task(task)
+                    self.active_tasks[task.task_id] = task
+
+                    # Set up task timeout
+                    self._task_timeouts[task.task_id] = asyncio.create_task(
+                        self._handle_task_timeout(task.task_id)
+                    )
+
+                    # Add to priority queue
+                    priority = task.metadata.get("priority", TaskPriority.MEDIUM)
+                    self._priority_queues[priority].append(task.task_id)
+
+                # Establish context
+                await self.context_manager.establish_context(
+                    task.task_id, {"task": task.dict(), "priority": priority}
+                )
+
+                # Create and execute saga
+                saga_steps = [
+                    SagaStep("plan_task", self._plan_task, self._compensate_planning),
+                    SagaStep(
+                        "execute_task", self._execute_task, self._compensate_execution
+                    ),
+                ]
+
+                await self.saga_manager.create_saga(
+                    task.task_id, saga_steps, {"task": task.dict()}
+                )
+
+                # Start saga execution
+                asyncio.create_task(self.saga_manager.execute_saga(task.task_id))
+
+                # Publish status update
+                status_update = TaskStatusUpdateMessage(
+                    task_id=task.task_id,
+                    status=TaskStatus.PLANNING,
+                    details={"message": "Task received and planning initiated"},
+                )
+                await self.rabbitmq_client.publish_message(
+                    message_body=status_update.dict(),
+                    exchange_name=RABBITMQ_EXCHANGE,
+                    routing_key="task.status",
+                )
+
+                logger.info(f"New task received and processed: {task.task_id}")
+
+            except json.JSONDecodeError:
+                logger.error("Failed to decode message body")
+                await message.nack(requeue=False)
+            except Exception as e:
+                logger.error(f"Error processing task: {str(e)}")
+                await message.nack(requeue=True)
+
+    async def _plan_task(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Plan a task."""
+        task = TaskRecord(**data["task"])
+
+        # Forward to capabilities engine for planning
+        await self.rabbitmq_client.publish_message(
+            message_body=task.dict(),
+            exchange_name="devfusion.capabilities",
+            routing_key="task.plan",
+        )
+
+        # Update context
+        await self.context_manager.update_context(
+            task.task_id, {"planning_started": datetime.now(UTC)}
+        )
+
+        return {"status": "planning_started"}
+
+    async def _compensate_planning(self, data: Dict[str, Any]):
+        """Compensate planning step."""
+        task = TaskRecord(**data["task"])
+        await self._update_task_status(
+            task.task_id, TaskStatus.FAILED, {"error": "Planning failed"}
+        )
+
+    async def _execute_task(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a task."""
+        task = TaskRecord(**data["task"])
+
+        # Forward to capabilities engine for execution
+        await self.rabbitmq_client.publish_message(
+            message_body=task.dict(),
+            exchange_name="devfusion.capabilities",
+            routing_key="task.execute",
+        )
+
+        # Update context
+        await self.context_manager.update_context(
+            task.task_id, {"execution_started": datetime.now(UTC)}
+        )
+
+        return {"status": "execution_started"}
+
+    async def _compensate_execution(self, data: Dict[str, Any]):
+        """Compensate execution step."""
+        task = TaskRecord(**data["task"])
+        await self._update_task_status(
+            task.task_id, TaskStatus.FAILED, {"error": "Execution failed"}
+        )
+
+    async def _handle_task_timeout(self, task_id: str):
+        """Handle task timeout."""
+        try:
+            await asyncio.sleep(TASK_TIMEOUT)
+            async with self._task_lock:
+                if task_id in self.active_tasks:
+                    task = self.active_tasks[task_id]
+                    if task.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                        await self._update_task_status(
+                            task_id,
+                            TaskStatus.FAILED,
+                            {"error": "Task timeout exceeded"},
+                        )
+                        logger.warning(
+                            f"Task {task_id} timed out after {TASK_TIMEOUT} seconds"
+                        )
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._task_timeouts.pop(task_id, None)
+
+    async def _update_task_status(
+        self, task_id: str, status: str, details: Optional[Dict[str, Any]] = None
+    ):
+        """Update task status and publish update."""
+        async with self._task_lock:
+            if task_id not in self.active_tasks:
+                logger.warning(f"Task not found: {task_id}")
+                return
+
+            task = self.active_tasks[task_id]
+            task.status = status
+            task.updated_at = datetime.now(UTC)
+            if details:
+                task.details = details
+
+            # Update in database
+            await self.db.update_task(task)
+
+            # Update context
+            await self.context_manager.update_context(
+                task_id, {"status": status, "details": details}
+            )
+
+            # Cancel timeout if task is completed or failed
+            if status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                if task_id in self._task_timeouts:
+                    self._task_timeouts[task_id].cancel()
+                    self._task_timeouts.pop(task_id)
+
+                # Clear context
+                await self.context_manager.clear_context(task_id)
+
+            status_update = TaskStatusUpdateMessage(
+                task_id=task_id, status=status, details=details
+            )
+
+            await self.rabbitmq_client.publish_message(
+                message_body=status_update.dict(),
+                exchange_name=RABBITMQ_EXCHANGE,
+                routing_key="task.status",
+            )
+
+            logger.info(f"Task {task_id} status updated to {status}")
 
 
-    async def handle_capabilities_engine_response(self, response_data: Dict[str, Any]):
-        """
-        Handles responses or status updates from the Agent Capabilities Engine.
-        E.g., planning_complete, step_complete, requires_user_input, task_complete, task_failed
-        """
-        task_id = response_data.get("task_id")
-        new_status = response_data.get("status") # e.g., "PLANNING_COMPLETE", "AWAITING_USER_INPUT"
-        payload = response_data.get("payload")
-
-        if not task_id or not new_status:
-            logger.warning("ORCHESTRATOR: Invalid message from Capabilities Engine (missing task_id or status).")
-            return
-
-        logger.info(f"ORCHESTRATOR: Received update from Capabilities Engine for task {task_id}: Status {new_status}")
-        await self.update_task_status(task_id, new_status, payload)
-
-        if new_status == "AWAITING_USER_INPUT":
-            # The UI backend would be listening for this status update to prompt the user.
-            logger.info(f"ORCHESTRATOR: Task {task_id} is now AWAITING_USER_INPUT.")
-        elif new_status == "COMPLETED" or new_status == "FAILED":
-            # Final states, potentially trigger cleanup or archival.
-            logger.info(f"ORCHESTRATOR: Task {task_id} reached final state: {new_status}.")
-            # Here, Saga compensation logic might be triggered if FAILED
-
-
-    # Placeholder for publishing messages (would use a proper message broker client)
-    async def publish_to_message_broker(self, topic: str, message: Any):
-        logger.info(f"ORCHESTRATOR (MockBroker): Publishing to topic '{topic}': {message}")
-        await asyncio.sleep(0.05)
-
-
-# Example of how this service might be run (conceptual)
 async def main():
-    orchestrator = TaskOrchestratorService()
-
-    # Simulate receiving a new task message
-    sample_task_data = NewTaskMessage(
-        user_id="user_123",
-        task_description="Research quantum computing and write a summary."
-    )
-    await orchestrator.handle_new_task_message(sample_task_data)
-
-    # Simulate a response from Capabilities Engine indicating planning is done
-    await asyncio.sleep(1) # Give some time for the "planning"
-    capabilities_response = {
-        "task_id": sample_task_data.task_id,
-        "status": "PLANNING_COMPLETE", # Example status
-        "payload": {"plan_details": "Step 1: Research, Step 2: Summarize"}
-    }
-    await orchestrator.handle_capabilities_engine_response(capabilities_response)
-
-    # Simulate another response - task completed
-    await asyncio.sleep(1)
-    capabilities_response_done = {
-        "task_id": sample_task_data.task_id,
-        "status": "COMPLETED", # Example status
-        "payload": {"final_result_location": "/results/quantum_summary.txt"}
-    }
-    await orchestrator.handle_capabilities_engine_response(capabilities_response_done)
+    """Main entry point for the service."""
+    service = TaskOrchestratorService()
+    try:
+        await service.start()
+        # Keep the service running
+        while True:
+            await asyncio.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutting down service...")
+    finally:
+        await service.stop()
 
 
 if __name__ == "__main__":
-    # Setup a config file for the test to run
-    import os
-    import yaml
-    test_config_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'config')
-    os.makedirs(test_config_dir, exist_ok=True)
-    test_config_file = os.path.join(test_config_dir, 'config.dev.yaml')
-
-    if not os.path.exists(test_config_file):
-        dummy_config_content = {
-            "global_settings": {"log_level": "INFO"},
-            "task_orchestrator_service": {"max_retries": 3, "default_timeout_seconds": 300},
-        }
-        with open(test_config_file, 'w') as f:
-            yaml.dump(dummy_config_content, f)
-
     asyncio.run(main())
