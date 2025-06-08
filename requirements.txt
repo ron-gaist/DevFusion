@@ -1,2 +1,5 @@
-PyYAML>=6.0
-colorlog>=6.0.0
+PyYAML
+colorlog
+python-dotenv
+tzdata
+aio-pika

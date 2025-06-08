@@ -373,7 +373,7 @@ Each tool is a self-contained asynchronous worker with standardized message-base
 
 * **Project Structure (Microservices Focus):**
     ```
-    /devfusion_ai_platform
+    /DevFusion
         /config
            config.dev.yaml
         /services

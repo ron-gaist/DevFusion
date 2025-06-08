@@ -20,10 +20,11 @@ class DevFusionLogger(Logger, metaclass=SingletonMeta):
     correlation_id_var = ContextVar("correlation_id", default=None)
     _initialized = False
 
-    def __init__(self, service_name: str):
+    def __init__(self):
         if DevFusionLogger._initialized:
             return
-        super().__init__(name=service_name, level=environ.get("LOG_LEVEL", NOTSET))
+        
+        super().__init__(name="DevFusionLogger", level=environ.get("LOG_LEVEL", NOTSET))
 
         Formatter.converter = self.israel_time
         local_formatter = ColoredFormatter(
@@ -31,7 +32,7 @@ class DevFusionLogger(Logger, metaclass=SingletonMeta):
             datefmt='%d-%m-%Y, %H:%M:%S',
             log_colors={
                 "DEBUG": "blue",
-                "INFO": "green",
+                "INFO": "",
                 "WARNING": "yellow",
                 "ERROR": "red",
                 "CRITICAL": "bold_red"

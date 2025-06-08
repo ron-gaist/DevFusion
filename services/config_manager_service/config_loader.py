@@ -1,11 +1,15 @@
 import yaml
 import os
+
 from typing import Dict, Any, Optional
+from dotenv import load_dotenv
+load_dotenv()
 
+from shared.common_utils import logger
 
-CONFIG_DIR = os.getenv('DEVFUION_CONFIG_DIR', os.path.join(os.path.dirname(__file__), '..', '..', 'config'))
+CONFIG_DIR = os.getenv('DEVFUSION_CONFIG_DIR', os.path.join(os.path.dirname(__file__), '..', '..', 'config'))
 DEFAULT_CONFIG_FILENAME = 'config.dev.yaml'
-CONFIG_FILE_PATH = os.getenv('DEVFUION_CONFIG_PATH', os.path.join(CONFIG_DIR, DEFAULT_CONFIG_FILENAME))
+CONFIG_FILE_PATH = os.getenv('DEVFUSION_CONFIG_PATH', os.path.join(CONFIG_DIR, DEFAULT_CONFIG_FILENAME))
 
 _config: Dict[str, Any] = {}
 
@@ -55,8 +59,8 @@ if __name__ == '__main__':
 
     # Test loading with default path logic
     load_config() # Should find it in ../../config/config.dev.yaml relative to this script's dir
-    print("\nGlobal Config:", get_config())
-    print("\nTask Orchestrator Config:", get_config("task_orchestrator_service"))
+    logger.info("Global Config:", get_config())
+    logger.info("Task Orchestrator Config:", get_config("task_orchestrator_service"))
 
     # To test with environment variable override:
     # 1. Create a 'my_custom_config.yaml' somewhere with different content.

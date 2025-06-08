@@ -1,22 +1,23 @@
 import asyncio
 
 from typing import Any, Dict, Optional
+from services.config_manager_service import get_config
 from shared.message_schemas.task_schemas import NewTaskMessage, TaskStatusUpdateMessage
-from services.config_manager_service.config_loader import get_config
+from shared.common_utils import logger
 
 # Placeholder for a potential database interface (we'll define this later)
 class DBInterfacePlaceholder:
     async def save_task_record(self, task_record: Dict[str, Any]) -> None:
-        print(f"DB_INTERFACE (Orchestrator): Saving task record: {task_record}")
+        logger.info(f"DB_INTERFACE (Orchestrator): Saving task record: {task_record}")
         # In a real scenario, this would be an async DB call
         await asyncio.sleep(0.1)
 
     async def update_task_status(self, task_id: str, status: str, details: Optional[Dict[str, Any]] = None) -> None:
-        print(f"DB_INTERFACE (Orchestrator): Updating task {task_id} to status {status}, Details: {details}")
+        logger.info(f"DB_INTERFACE (Orchestrator): Updating task {task_id} to status {status}, Details: {details}")
         await asyncio.sleep(0.1)
 
     async def get_task_record(self, task_id: str) -> Optional[Dict[str, Any]]:
-        print(f"DB_INTERFACE (Orchestrator): Getting task record for {task_id}")
+        logger.info(f"DB_INTERFACE (Orchestrator): Getting task record for {task_id}")
         # Simulate fetching a task
         await asyncio.sleep(0.1)
         # Return a dummy record for now if needed for logic
@@ -32,14 +33,14 @@ class TaskOrchestratorService:
         self.db_interface = DBInterfacePlaceholder() # Placeholder for DB interactions
         self.capabilities_engine_client = None # Placeholder for communication with Capabilities Engine
 
-        print(f"{self.service_name} initialized with config: {self.config}")
-        print("Task Orchestrator Service is ready to manage task lifecycles.")
+        logger.info(f"{self.service_name} initialized with config: {self.config}")
+        logger.info("Task Orchestrator Service is ready to manage task lifecycles.")
 
     async def handle_new_task_message(self, message_content: NewTaskMessage) -> None:
         """
         Handles a new task message, typically from the UI Backend via the message broker.
         """
-        print(f"ORCHESTRATOR: Received new task: {message_content}")
+        logger.info(f"ORCHESTRATOR: Received new task: {message_content}")
 
         # 1. Persist initial TaskRecord
         task_record = {
@@ -54,7 +55,7 @@ class TaskOrchestratorService:
             "saga_state": "NOT_STARTED" # For Saga pattern
         }
         await self.db_interface.save_task_record(task_record)
-        print(f"ORCHESTRATOR: Task {message_content.task_id} saved with status RECEIVED.")
+        logger.info(f"ORCHESTRATOR: Task {message_content.task_id} saved with status RECEIVED.")
 
         # 2. Publish TaskStatusUpdate (optional, UI backend might infer from ack or a direct response)
         # status_update = TaskStatusUpdateMessage(task_id=message_content.task_id, status="RECEIVED")
@@ -63,7 +64,7 @@ class TaskOrchestratorService:
         # 3. Initiate task with Agent Capabilities Engine
         # This would involve sending a message to the Capabilities Engine.
         # For now, we'll just log it.
-        print(f"ORCHESTRATOR: Initiating task {message_content.task_id} with Agent Capabilities Engine.")
+        logger.info(f"ORCHESTRATOR: Initiating task {message_content.task_id} with Agent Capabilities Engine.")
         # In a real system:
         # await self.capabilities_engine_client.request_task_planning(message_content.task_id, message_content.task_description)
         await self.update_task_status(message_content.task_id, "PLANNING_QUEUED", {"message": "Sent to Capabilities Engine for planning."})
@@ -74,7 +75,7 @@ class TaskOrchestratorService:
         Updates the status of a task and publishes this update.
         This might be called internally or by other services (e.g., Capabilities Engine notifying of progress).
         """
-        print(f"ORCHESTRATOR: Updating task {task_id} to status '{new_status}'. Details: {details}")
+        logger.info(f"ORCHESTRATOR: Updating task {task_id} to status '{new_status}'. Details: {details}")
         await self.db_interface.update_task_status(task_id, new_status, details)
 
         # Publish status update to message broker for UI and other interested services
@@ -84,7 +85,7 @@ class TaskOrchestratorService:
             details=details
         )
         # await self.publish_to_message_broker('task_status_updates', status_update_message)
-        print(f"ORCHESTRATOR: Published status update for {task_id}: {status_update_message}")
+        logger.info(f"ORCHESTRATOR: Published status update for {task_id}: {status_update_message}")
 
 
     async def handle_capabilities_engine_response(self, response_data: Dict[str, Any]):
@@ -97,24 +98,24 @@ class TaskOrchestratorService:
         payload = response_data.get("payload")
 
         if not task_id or not new_status:
-            print("ORCHESTRATOR: Invalid message from Capabilities Engine (missing task_id or status).")
+            logger.warning("ORCHESTRATOR: Invalid message from Capabilities Engine (missing task_id or status).")
             return
 
-        print(f"ORCHESTRATOR: Received update from Capabilities Engine for task {task_id}: Status {new_status}")
+        logger.info(f"ORCHESTRATOR: Received update from Capabilities Engine for task {task_id}: Status {new_status}")
         await self.update_task_status(task_id, new_status, payload)
 
         if new_status == "AWAITING_USER_INPUT":
             # The UI backend would be listening for this status update to prompt the user.
-            print(f"ORCHESTRATOR: Task {task_id} is now AWAITING_USER_INPUT.")
+            logger.info(f"ORCHESTRATOR: Task {task_id} is now AWAITING_USER_INPUT.")
         elif new_status == "COMPLETED" or new_status == "FAILED":
             # Final states, potentially trigger cleanup or archival.
-            print(f"ORCHESTRATOR: Task {task_id} reached final state: {new_status}.")
+            logger.info(f"ORCHESTRATOR: Task {task_id} reached final state: {new_status}.")
             # Here, Saga compensation logic might be triggered if FAILED
 
 
     # Placeholder for publishing messages (would use a proper message broker client)
     async def publish_to_message_broker(self, topic: str, message: Any):
-        print(f"ORCHESTRATOR (MockBroker): Publishing to topic '{topic}': {message}")
+        logger.info(f"ORCHESTRATOR (MockBroker): Publishing to topic '{topic}': {message}")
         await asyncio.sleep(0.05)
 
 
