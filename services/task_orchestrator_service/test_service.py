@@ -194,3 +194,94 @@ async def test_update_task_status_not_found(service, mock_rabbitmq_client):
 
     # Verify no message was published
     mock_rabbitmq_client.publish_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_task_status_completed(service, mock_rabbitmq_client):
+    """Verify that completion publishes additional message."""
+    task = TaskRecord(
+        task_id="test_task_3",
+        user_id="test_user",
+        task_description="Test task",
+        status="EXECUTING",
+        metadata={},
+    )
+    service.active_tasks[task.task_id] = task
+
+    await service._update_task_status(task.task_id, "COMPLETED", {"result": "ok"})
+
+    # Two messages should be published: status update and completion
+    assert mock_rabbitmq_client.publish_message.call_count == 2
+    status_call = mock_rabbitmq_client.publish_message.call_args_list[0][1]
+    completion_call = mock_rabbitmq_client.publish_message.call_args_list[1][1]
+
+    assert status_call["routing_key"] == "task.status"
+    assert completion_call["routing_key"] == "task.completed"
+
+
+@pytest.mark.asyncio
+async def test_update_task_status_awaiting_input(service, mock_rabbitmq_client):
+    """Verify that asking user publishes question message."""
+    task = TaskRecord(
+        task_id="test_task_4",
+        user_id="test_user",
+        task_description="Test task",
+        status="EXECUTING",
+        metadata={},
+    )
+    service.active_tasks[task.task_id] = task
+
+    await service._update_task_status(
+        task.task_id,
+        "AWAITING_USER_INPUT",
+        {"question": "Need more info"},
+    )
+
+    # Two messages should be published: status update and question for user
+    assert mock_rabbitmq_client.publish_message.call_count == 2
+    status_call = mock_rabbitmq_client.publish_message.call_args_list[0][1]
+    question_call = mock_rabbitmq_client.publish_message.call_args_list[1][1]
+
+    assert status_call["routing_key"] == "task.status"
+    assert question_call["routing_key"] == "task.question_for_user"
+
+
+@pytest.mark.asyncio
+async def test_handle_user_response(service, mock_rabbitmq_client):
+    """Ensure user response is forwarded and status updated."""
+    task = TaskRecord(
+        task_id="test_task_5",
+        user_id="test_user",
+        task_description="Test task",
+        status="AWAITING_USER_INPUT",
+        metadata={},
+    )
+    service.active_tasks[task.task_id] = task
+
+    mock_message = MagicMock()
+    response = {
+        "task_id": task.task_id,
+        "response_content": "Here you go",
+        "user_id": "test_user",
+    }
+    mock_message.body = json.dumps(response).encode()
+
+    class CM:
+        async def __aenter__(self_inner):
+            return None
+
+        async def __aexit__(self_inner, exc_type, exc, tb):
+            await mock_message.ack()
+
+    mock_message.process = MagicMock(return_value=CM())
+    mock_message.ack = AsyncMock()
+
+    await service._handle_user_response(mock_message)
+
+    # Two messages: forward to capabilities engine and status update
+    assert mock_rabbitmq_client.publish_message.call_count == 2
+    forward_call = mock_rabbitmq_client.publish_message.call_args_list[0][1]
+    status_call = mock_rabbitmq_client.publish_message.call_args_list[1][1]
+
+    assert forward_call["routing_key"] == "task.user_response"
+    assert status_call["routing_key"] == "task.status"

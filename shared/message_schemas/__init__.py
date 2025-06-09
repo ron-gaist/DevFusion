@@ -1,14 +1,22 @@
-from .llm_schemas import *
-from .task_schemas import *
+"""Convenience exports for message schema dataclasses."""
+
+from .llm_schemas import LLMRequestMessage, LLMResponseMessage
+from .task_schemas import (
+    NewTaskMessage,
+    TaskStatusUpdateMessage,
+    UserResponseMessage,
+    TaskCompletedMessage,
+    TaskFailedMessage,
+    QuestionForUserMessage,
+)
 
 __all__ = [
-    # LLM Schemas
-    "LLMRequest",
-    "LLMResponse",
-    "LLMError",
-    # Task Schemas
-    "TaskRequest",
-    "TaskResponse",
-    "TaskStatus",
-    "TaskError",
+    "LLMRequestMessage",
+    "LLMResponseMessage",
+    "NewTaskMessage",
+    "TaskStatusUpdateMessage",
+    "UserResponseMessage",
+    "TaskCompletedMessage",
+    "TaskFailedMessage",
+    "QuestionForUserMessage",
 ]
