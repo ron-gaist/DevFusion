@@ -1,23 +1,36 @@
 # Core Dependencies
-PyYAML>=6.0.1
-colorlog>=6.8.0
-python-dotenv>=1.0.0
-tzdata>=2024.1
+fastapi>=0.68.0
+uvicorn>=0.15.0
+pydantic>=1.8.0
+python-dotenv>=0.19.0
+structlog>=23.1.0
+tenacity>=8.0.1
+prometheus-client>=0.11.0
+opentelemetry-api>=1.12.0
+opentelemetry-sdk>=1.12.0
+opentelemetry-instrumentation-fastapi>=0.30b1
+opentelemetry-exporter-otlp>=1.12.0
 
 # Message Queue
 aio-pika>=9.3.0
 
 # Database
-alembic>=1.13.1
-sqlalchemy[asyncio]>=2.0.27
-psycopg2-binary>=2.9.9
+sqlalchemy>=1.4.0
+alembic>=1.7.0
+psycopg2-binary>=2.9.0
+asyncpg>=0.30.0
 
 # Testing
-pytest>=7.4.0
-pytest-asyncio>=0.21.1
+pytest>=6.2.5
+pytest-asyncio>=0.15.1
+pytest-cov>=2.12.1
+pytest-mock>=3.6.1
+pytest-env>=0.6.2
+pytest-timeout>=2.1.0
 
 # Development
-black>=23.12.1
-isort>=5.13.2
-flake8>=7.0.0
-mypy>=1.8.0
+black>=21.7b0
+isort>=5.9.3
+flake8>=3.9.2
+mypy>=0.910
+pre-commit>=2.15.0
