@@ -28,7 +28,7 @@ class Task(Base):
     details = Column(JSON)
     execution_plan_id = Column(String(36))
     saga_state = Column(String(50), nullable=False, default="NOT_STARTED")
-    metadata = Column(JSON)
+    metadata_json = Column("metadata", JSON)
     priority = Column(Integer, default=1)
 
     # Relationships

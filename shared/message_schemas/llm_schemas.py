@@ -9,8 +9,8 @@ class LLMRequestMessage:
     Message for requesting an action from the LLM Abstraction Layer.
     """
 
-    request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     prompt: str
+    request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     task_id: Optional[str] = None  # To correlate with the overarching agent task
     model_preferences: Optional[Dict[str, Any]] = (
         None  # e.g., {"provider": "ollama", "model": "llama3"}
