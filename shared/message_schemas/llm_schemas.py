@@ -10,8 +10,8 @@ class LLMRequestMessage:
     """
 
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    task_id: Optional[str] = None  # To correlate with the overarching agent task
     prompt: str
+    task_id: Optional[str] = None  # To correlate with the overarching agent task
     model_preferences: Optional[Dict[str, Any]] = (
         None  # e.g., {"provider": "ollama", "model": "llama3"}
     )
@@ -26,8 +26,8 @@ class LLMResponseMessage:
     """
 
     request_id: str  # Correlates with LLMRequestMessage.request_id
-    task_id: Optional[str] = None
     content: str
+    task_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = (
         None  # e.g., tokens_used, confidence, model_used
     )
