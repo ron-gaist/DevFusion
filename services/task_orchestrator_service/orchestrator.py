@@ -4,10 +4,15 @@ from dataclasses import asdict
 from datetime import datetime, UTC
 from typing import Any, Dict, Optional, List
 
-from pydantic import BaseModel, Field
 
 from shared.common_utils import RabbitMQClient, logger
-from shared.message_schemas.task_schemas import TaskStatusUpdateMessage
+from shared.message_schemas.task_schemas import (
+    TaskStatusUpdateMessage,
+    TaskCompletedMessage,
+    TaskFailedMessage,
+    QuestionForUserMessage,
+    UserResponseMessage,
+)
 from shared.db_models.task_models import TaskRecord
 from shared.db_models.db_interface import DatabaseInterface
 from shared.common_utils.context_manager import ContextManager
@@ -187,6 +192,38 @@ class TaskOrchestratorService:
                 logger.error(f"Error processing task: {str(e)}")
                 await message.nack(requeue=True)
 
+    async def _handle_user_response(self, message):
+        """Handle a user response message from the UI."""
+        async with message.process():
+            try:
+                data = json.loads(message.body.decode())
+                response = UserResponseMessage(**data)
+
+                # Forward response to capabilities engine
+                await self.rabbitmq_client.publish_message(
+                    message_body=asdict(response),
+                    exchange_name="devfusion.capabilities",
+                    routing_key="task.user_response",
+                )
+
+                # Update context and mark task as executing again
+                await self.context_manager.update_context(
+                    response.task_id,
+                    {"user_response": response.response_content},
+                )
+                await self._update_task_status(
+                    response.task_id, TaskStatus.EXECUTING
+                )
+
+                logger.info(
+                    f"User response processed for task {response.task_id}"
+                )
+            except json.JSONDecodeError:
+                logger.error("Failed to decode user response message")
+                await message.nack(requeue=False)
+            except Exception as e:
+                logger.error(f"Error handling user response: {str(e)}")
+                await message.nack(requeue=True)
     async def _plan_task(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Plan a task."""
         task = TaskRecord(**data["task"])
@@ -299,6 +336,37 @@ class TaskOrchestratorService:
                 exchange_name=RABBITMQ_EXCHANGE,
                 routing_key="task.status",
             )
+
+            if status == TaskStatus.AWAITING_USER_INPUT:
+                if details and "question" in details:
+                    question_msg = QuestionForUserMessage(
+                        task_id=task_id,
+                        question=details["question"],
+                        user_id=task.user_id,
+                    )
+                    await self.rabbitmq_client.publish_message(
+                        message_body=asdict(question_msg),
+                        exchange_name=RABBITMQ_EXCHANGE,
+                        routing_key="task.question_for_user",
+                    )
+            elif status == TaskStatus.COMPLETED:
+                completed_msg = TaskCompletedMessage(
+                    task_id=task_id, details=details
+                )
+                await self.rabbitmq_client.publish_message(
+                    message_body=asdict(completed_msg),
+                    exchange_name=RABBITMQ_EXCHANGE,
+                    routing_key="task.completed",
+                )
+            elif status == TaskStatus.FAILED:
+                failed_msg = TaskFailedMessage(
+                    task_id=task_id, details=details
+                )
+                await self.rabbitmq_client.publish_message(
+                    message_body=asdict(failed_msg),
+                    exchange_name=RABBITMQ_EXCHANGE,
+                    routing_key="task.failed",
+                )
 
             logger.info(f"Task {task_id} status updated to {status}")
 
