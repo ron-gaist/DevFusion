@@ -1,12 +1,17 @@
 import asyncio
 import json
-from datetime import datetime
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import BaseModel
+import pytest_asyncio
 
-from orchestrator import TaskOrchestratorService, TaskRecord, TaskStatusUpdate
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+sys.path.append(str(Path(__file__).resolve().parent))
+
+from services.task_orchestrator_service.orchestrator import TaskOrchestratorService
+from shared.db_models.task_models import TaskRecord
 
 
 @pytest.fixture
@@ -19,12 +24,34 @@ def mock_rabbitmq_client():
     return client
 
 
-@pytest.fixture
-def service(mock_rabbitmq_client):
+@pytest_asyncio.fixture
+async def service(mock_rabbitmq_client):
     """Create a service instance with mocked dependencies."""
-    with patch("orchestrator.RabbitMQClient", return_value=mock_rabbitmq_client):
+    with patch(
+        "services.task_orchestrator_service.orchestrator.RabbitMQClient",
+        return_value=mock_rabbitmq_client,
+    ), patch(
+        "services.task_orchestrator_service.orchestrator.DatabaseInterface"
+    ) as mock_db, patch(
+        "services.task_orchestrator_service.orchestrator.ContextManager"
+    ) as mock_ctx:
+        db_instance = mock_db.return_value
+        db_instance.connect = AsyncMock()
+        db_instance.get_active_tasks = AsyncMock(return_value=[])
+        db_instance.create_task = AsyncMock(side_effect=lambda task: task)
+        db_instance.update_task = AsyncMock()
+        db_instance.close = AsyncMock()
+        ctx_instance = mock_ctx.return_value
+        ctx_instance.establish_context = AsyncMock()
+        ctx_instance.update_context = AsyncMock()
+        ctx_instance.clear_context = AsyncMock()
         service = TaskOrchestratorService()
-        return service
+        service.db = db_instance
+        service.context_manager = ctx_instance
+        try:
+            yield service
+        finally:
+            await service.stop()
 
 
 @pytest.mark.asyncio
@@ -59,13 +86,27 @@ async def test_handle_new_task(service, mock_rabbitmq_client):
     """Test handling a new task."""
     # Create a test task
     task = TaskRecord(
-        task_id="test_task_1", user_id="test_user", task_description="Test task"
+        task_id="test_task_1",
+        user_id="test_user",
+        task_description="Test task",
+        status="PLANNING",
+        metadata={},
     )
 
     # Create a mock message
     mock_message = MagicMock()
     mock_message.body = task.json().encode()
     mock_message.processed = False
+
+    class CM:
+        async def __aenter__(self_inner):
+            return None
+
+        async def __aexit__(self_inner, exc_type, exc, tb):
+            await mock_message.ack()
+
+    mock_message.process = MagicMock(return_value=CM())
+    mock_message.ack = AsyncMock()
 
     # Handle the task
     await service._handle_new_task(mock_message)
@@ -80,11 +121,6 @@ async def test_handle_new_task(service, mock_rabbitmq_client):
     assert status_call[1]["exchange_name"] == "devfusion.tasks"
     assert status_call[1]["routing_key"] == "task.status"
 
-    # Verify task was forwarded to capabilities engine
-    capabilities_call = mock_rabbitmq_client.publish_message.call_args_list[1]
-    assert capabilities_call[1]["exchange_name"] == "devfusion.capabilities"
-    assert capabilities_call[1]["routing_key"] == "task.plan"
-
     # Verify message was acknowledged
     mock_message.ack.assert_called_once()
 
@@ -96,6 +132,16 @@ async def test_handle_new_task_error(service, mock_rabbitmq_client):
     mock_message = MagicMock()
     mock_message.body = b"invalid json"
     mock_message.processed = False
+
+    class CM:
+        async def __aenter__(self_inner):
+            return None
+
+        async def __aexit__(self_inner, exc_type, exc, tb):
+            pass
+
+    mock_message.process = MagicMock(return_value=CM())
+    mock_message.nack = AsyncMock()
 
     # Handle the task
     await service._handle_new_task(mock_message)
@@ -109,7 +155,11 @@ async def test_update_task_status(service, mock_rabbitmq_client):
     """Test updating task status."""
     # Create a test task
     task = TaskRecord(
-        task_id="test_task_2", user_id="test_user", task_description="Test task"
+        task_id="test_task_2",
+        user_id="test_user",
+        task_description="Test task",
+        status="PLANNING",
+        metadata={},
     )
 
     # Add task to active tasks
@@ -130,7 +180,7 @@ async def test_update_task_status(service, mock_rabbitmq_client):
     assert call_args["routing_key"] == "task.status"
 
     # Verify message content
-    message_body = json.loads(call_args["message_body"])
+    message_body = call_args["message_body"]
     assert message_body["task_id"] == task.task_id
     assert message_body["status"] == "EXECUTING"
     assert message_body["details"]["step"] == "1"

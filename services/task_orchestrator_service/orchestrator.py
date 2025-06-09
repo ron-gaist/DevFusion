@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import asdict
 from datetime import datetime, UTC
 from typing import Any, Dict, Optional, List
 
@@ -172,7 +173,7 @@ class TaskOrchestratorService:
                     details={"message": "Task received and planning initiated"},
                 )
                 await self.rabbitmq_client.publish_message(
-                    message_body=status_update.dict(),
+                    message_body=asdict(status_update),
                     exchange_name=RABBITMQ_EXCHANGE,
                     routing_key="task.status",
                 )
@@ -294,7 +295,7 @@ class TaskOrchestratorService:
             )
 
             await self.rabbitmq_client.publish_message(
-                message_body=status_update.dict(),
+                message_body=asdict(status_update),
                 exchange_name=RABBITMQ_EXCHANGE,
                 routing_key="task.status",
             )
