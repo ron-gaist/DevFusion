@@ -11,8 +11,9 @@ from aio_pika.abc import (
     AbstractIncomingMessage,
     AbstractQueue,
 )
+from aio_pika.patterns import RPC
 
-from .logger import logger
+from shared.common_utils.logger import logger
 
 
 class RabbitMQClient:
@@ -33,6 +34,9 @@ class RabbitMQClient:
         retry_backoff: int = 1,
         health_check_interval: int = 30,
         version: Optional[str] = None,
+        exchange_name: str = "devfusion",
+        queue_name: Optional[str] = None,
+        binding_keys: Optional[List[str]] = None,
     ):
         """
         Initializes the RabbitMQ client with service-specific configurations.
@@ -45,12 +49,18 @@ class RabbitMQClient:
             retry_backoff: Base delay in seconds for exponential backoff
             health_check_interval: Interval in seconds for health checks
             version: Service version. If None, will use from environment variable
+            exchange_name: The name of the exchange to use
+            queue_name: The name of the queue to use
+            binding_keys: The list of binding keys to use
         """
         self.service_name = service_name
         self.rabbitmq_url = rabbitmq_url or os.getenv(
             f"{service_name.upper()}_RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"
         )
         self.version = version or os.getenv(f"{service_name.upper()}_VERSION", "1.0.0")
+        self.exchange_name = exchange_name
+        self.queue_name = queue_name or f"{service_name}_queue"
+        self.binding_keys = binding_keys or [f"{service_name}.*"]
 
         self.connection: Optional[AbstractRobustConnection] = None
         self.is_connecting = False
@@ -75,6 +85,11 @@ class RabbitMQClient:
             str, Tuple[AbstractRobustChannel, str, asyncio.Task]
         ] = {}
         self._consumer_management_lock = asyncio.Lock()
+
+        self.channel: Optional[AbstractRobustChannel] = None
+        self.exchange: Optional[aio_pika.Exchange] = None
+        self.queue: Optional[AbstractQueue] = None
+        self.rpc: Optional[RPC] = None
 
         logger.info(
             f"DevFusion RabbitMQClient initialized for service '{service_name}' (v{self.version})"

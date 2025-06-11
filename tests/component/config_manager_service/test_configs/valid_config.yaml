@@ -1,0 +1,8 @@
+global_settings:
+  debug: true
+  log_level: INFO
+services:
+  test_service:
+    setting1: value1
+    setting2: 42
+version: 0.1.0

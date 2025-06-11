@@ -2,11 +2,29 @@ import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, UTC
+from uuid import uuid4
 
 from shared.message_schemas.task_schemas import Task, TaskStatus, TaskPriority, TaskMetadata
 from services.task_orchestrator_service.src.orchestrator import TaskOrchestratorService
 
 pytestmark = pytest.mark.asyncio
+
+@pytest.fixture
+def sample_task():
+    """Create a sample task for testing."""
+    return Task(
+        task_id=str(uuid4()),
+        description="Test task description",
+        metadata=TaskMetadata(
+            priority=TaskPriority.MEDIUM,
+            timeout=3600,
+            max_retries=3,
+            tags=[],
+            user_id="test-user"
+        ),
+        status=TaskStatus.PENDING,
+        context={}
+    )
 
 @pytest.mark.asyncio
 async def test_handle_invalid_message(orchestrator_service, mock_rabbitmq_client):

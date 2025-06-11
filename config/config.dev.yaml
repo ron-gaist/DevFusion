@@ -1,7 +1,73 @@
+version: "0.1.0"
+
 global_settings:
-  log_level: INFO
-llm_abstraction_service:
-  default_provider: ollama
-  ollama_url: http://localhost:11434
-task_orchestrator_service:
-  max_concurrent_tasks: 10
+  log_level: "INFO"
+  environment: "development"
+  debug: true
+  max_retries: 3
+  timeout_seconds: 30
+
+services:
+  task_orchestrator_service:
+    max_concurrent_tasks: 10
+    task_timeout_seconds: 300
+    retry_delay_seconds: 5
+
+  llm_abstraction_service:
+    default_provider: "ollama"
+    ollama_url: "http://localhost:11434"
+    model_name: "llama2"
+    max_tokens: 2000
+    temperature: 0.7
+
+  context_manager_service:
+    max_context_size: 1000
+    context_ttl_seconds: 3600
+    cleanup_interval_seconds: 300
+
+  tool_coding_playground_service:
+    max_execution_time_seconds: 30
+    memory_limit_mb: 512
+    cpu_limit: 1
+    allowed_packages:
+      - "numpy"
+      - "pandas"
+      - "requests"
+
+  tool_internet_access_service:
+    max_requests_per_minute: 60
+    timeout_seconds: 10
+    user_agent: "DevFusion/0.1.0"
+
+  tool_github_service:
+    api_rate_limit: 5000
+    webhook_secret: "your-webhook-secret"
+    default_branch: "main"
+
+  tool_research_service:
+    max_sources: 5
+    min_confidence: 0.7
+    cache_ttl_seconds: 3600
+
+  feedback_collector_service:
+    feedback_ttl_days: 30
+    min_feedback_length: 10
+    max_feedback_length: 1000
+
+  kb_updater_service:
+    batch_size: 100
+    update_interval_seconds: 300
+    max_retries: 3
+
+  ui_backend_service:
+    host: "0.0.0.0"
+    port: 8000
+    cors_origins:
+      - "http://localhost:3000"
+    websocket_ping_interval: 30
+    websocket_ping_timeout: 10
+
+  config_manager_service:
+    watch_config: true
+    config_dir: "config"
+    default_config_file: "config.dev.yaml"

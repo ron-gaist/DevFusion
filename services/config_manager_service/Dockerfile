@@ -20,7 +20,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy service-specific requirements and install
-COPY services/task_orchestrator_service/requirements.txt .
+COPY services/config_manager_service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Final stage
@@ -34,12 +34,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
+# Install curl for healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages/ /usr/local/lib/python3.12/site-packages/
 
 # Copy application code
-COPY services/task_orchestrator_service /app/services/task_orchestrator_service
+COPY services/config_manager_service /app/services/config_manager_service
 COPY shared /app/shared
+COPY config /app/config
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser && \
@@ -48,9 +54,12 @@ RUN useradd -m -u 1000 appuser && \
 # Switch to non-root user
 USER appuser
 
-# Set healthcheck to check RabbitMQ connection
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import asyncio; from services.task_orchestrator_service.src.messaging.rabbitmq_client import RabbitMQClient; from services.task_orchestrator_service.config.env_settings import OrchestratorSettings; async def check(): client = RabbitMQClient(OrchestratorSettings()); await client.connect(); await client.close(); asyncio.run(check())" || exit 1
+# Expose port
+EXPOSE 8000
 
-# Run the orchestrator service
-CMD ["python", "-m", "services.task_orchestrator_service.src.orchestrator"] 
+# Set healthcheck
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the application
+CMD ["uvicorn", "services.config_manager_service.main:app", "--host", "0.0.0.0", "--port", "8000"] 

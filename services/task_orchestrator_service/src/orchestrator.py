@@ -4,7 +4,8 @@ from datetime import datetime, UTC
 from typing import Any, Dict, Optional, List
 from uuid import uuid4
 
-from shared.common_utils import RabbitMQClient, logger
+from shared.common_utils import RabbitMQClient
+from shared.common_utils.logger import logger
 from shared.message_schemas.task_schemas import (
     TaskStatusUpdateMessage,
     Task,
@@ -17,8 +18,9 @@ from shared.message_schemas.task_schemas import (
 )
 from shared.db_models.db_interface import DatabaseInterface
 from shared.common_utils.context_manager import ContextManager
-from shared.common_utils.saga_manager import SagaManager, SagaStep
-from services.config_manager_service.config_loader import get_config
+from shared.common_utils.saga_manager import SagaManager
+from services.config_manager_service.src.config_loader import get_config
+from ..config.env_settings import OrchestratorSettings
 
 from ..config.env_settings import settings
 
@@ -28,30 +30,19 @@ class TaskOrchestratorService:
 
     def __init__(self):
         """Initialize the service."""
-        self.service_name = settings.SERVICE_NAME
-        self.version = settings.SERVICE_VERSION
-
-        # Initialize components
-        self.config_manager = get_config()
-        self.rabbitmq_client = RabbitMQClient(
-            service_name=self.service_name,
-            rabbitmq_url=settings.RABBITMQ_URL,
-            version=self.version,
-        )
-        self.db = DatabaseInterface(
-            {
-                "host": settings.DB_HOST,
-                "port": settings.DB_PORT,
-                "database": settings.DB_NAME,
-                "user": settings.DB_USER,
-                "password": settings.DB_PASSWORD,
-            }
-        )
-        self.context_manager = ContextManager()
-        self.saga_manager = SagaManager()
-
-        # Task management
-        self.active_tasks: Dict[str, Task] = {}
+        self.service_name = "task_orchestrator_service"
+        self.version = "1.0.0"
+        self.config = None
+        self.db = None
+        self.rabbitmq_client = None
+        self.saga_manager = None
+        self._running = False
+        self._task_queue = asyncio.Queue()
+        self._max_concurrent_tasks = 5  # Default value, will be updated in initialize()
+        self._task_timeout = 300  # 5 minutes default
+        self._active_tasks = set()
+        self._task_handlers = {}
+        self.context = ContextManager()
         self._task_lock = asyncio.Lock()
         self._task_timeouts: Dict[str, asyncio.Task] = {}
         self._priority_queues: Dict[TaskPriority, List[str]] = {
@@ -67,59 +58,80 @@ class TaskOrchestratorService:
 
         logger.info(f"{self.service_name} v{self.version} initialized")
 
-    async def start(self):
-        """Start the service and establish connections."""
+    async def initialize(self):
+        """Initialize the service asynchronously."""
         try:
-            # Connect to database
-            await self.db.connect()
-
-            # Load active tasks from database
-            active_tasks = await self.db.get_active_tasks()
-            for task in active_tasks:
-                self.active_tasks[task.task_id] = task
-                # Restore timeouts for active tasks
-                if task.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-                    self._task_timeouts[task.task_id] = asyncio.create_task(
-                        self._handle_task_timeout(task.task_id)
-                    )
-
-            # Start consuming messages
-            await self.rabbitmq_client.start_consuming(
-                queue_name=settings.RABBITMQ_QUEUE,
-                on_message_callback=self._handle_new_task,
-                exchange_name=settings.RABBITMQ_EXCHANGE,
-                binding_keys=settings.RABBITMQ_BINDING_KEYS,
-            )
-
-            # Start consuming user responses
-            await self.rabbitmq_client.start_consuming(
-                queue_name=f"{self.service_name}.user_responses",
-                on_message_callback=self._handle_user_response,
-                exchange_name=settings.RABBITMQ_EXCHANGE,
-                binding_keys=["task.user_response"],
-            )
-
-            logger.info(f"{self.service_name} v{self.version} started successfully")
-
+            self.config = await get_config(self.service_name)
+            if not self.config:
+                raise ValueError("Failed to load configuration")
+            
+            # Extract task configuration with defaults
+            task_config = self.config.get("task", {})
+            self._max_concurrent_tasks = task_config.get("max_concurrent_tasks", 5)
+            self._task_timeout = task_config.get("timeout", 300)
+            
+            # Validate required configuration sections
+            if "database" not in self.config:
+                raise ValueError("Database configuration is required")
+            if "rabbitmq" not in self.config:
+                raise ValueError("RabbitMQ configuration is required")
+                
+            logger.info(f"Service initialized with max_concurrent_tasks={self._max_concurrent_tasks}, task_timeout={self._task_timeout}")
         except Exception as e:
-            logger.error(f"Failed to start service: {str(e)}")
+            logger.error(f"Failed to initialize service: {str(e)}")
             raise
+
+    async def start(self, config: Dict[str, Any]) -> None:
+        """Start the orchestrator service."""
+        self.config = config
+        self.logger.info("Starting orchestrator service...")
+        
+        # Initialize database connection
+        try:
+            self.db = DatabaseInterface(connection_params=self.config["database"])
+            await self.db.connect()
+            self.logger.info("Database connection established")
+        except Exception as e:
+            self.logger.error(f"Failed to connect to database: {str(e)}")
+            raise
+        
+        # Initialize RabbitMQ client
+        try:
+            self.rabbitmq_client = RabbitMQClient(
+                host=self.config["rabbitmq"]["host"],
+                port=self.config["rabbitmq"]["port"],
+                username=self.config["rabbitmq"]["username"],
+                password=self.config["rabbitmq"]["password"],
+                virtual_host=self.config["rabbitmq"]["virtual_host"]
+            )
+            await self.rabbitmq_client.connect()
+            self.logger.info("RabbitMQ connection established")
+        except Exception as e:
+            self.logger.error(f"Failed to connect to RabbitMQ: {str(e)}")
+            raise
+        
+        # Start task processing
+        self.task_processor = TaskProcessor(self.db, self.rabbitmq_client)
+        await self.task_processor.start()
+        self.logger.info("Task processor started")
+        
+        self.logger.info("Orchestrator service started successfully")
 
     async def stop(self):
-        """Stop the service and close connections."""
-        try:
-            # Cancel all task timeouts
-            for timeout_task in self._task_timeouts.values():
-                timeout_task.cancel()
-
-            # Close connections
-            await self.rabbitmq_client.close()
+        """Stop the service."""
+        self._running = False
+        
+        # Close database connection
+        if self.db:
             await self.db.close()
-
-            logger.info(f"{self.service_name} stopped successfully")
-        except Exception as e:
-            logger.error(f"Error stopping service: {str(e)}")
-            raise
+            self.db = None
+            
+        # Close RabbitMQ connection
+        if self.rabbitmq_client:
+            await self.rabbitmq_client.close()
+            self.rabbitmq_client = None
+            
+        logger.info("Task orchestrator service stopped")
 
     async def _handle_new_task(self, message):
         """Handle incoming new task messages."""
@@ -130,7 +142,7 @@ class TaskOrchestratorService:
                 task = Task(**task_data)
 
                 # Check if we can accept more tasks
-                if len(self.active_tasks) >= settings.MAX_CONCURRENT_TASKS:
+                if len(self._active_tasks) >= self._max_concurrent_tasks:
                     logger.warning(
                         "Maximum concurrent tasks reached, rejecting new task"
                     )
@@ -140,9 +152,7 @@ class TaskOrchestratorService:
                 async with self._task_lock:
                     # Store task in database
                     task = await self.db.create_task(task)
-                    self.active_tasks[task.task_id] = task
-
-                    # Set up task timeout
+                    self._active_tasks.add(task.task_id)
                     self._task_timeouts[task.task_id] = asyncio.create_task(
                         self._handle_task_timeout(task.task_id)
                     )
@@ -160,7 +170,7 @@ class TaskOrchestratorService:
                     }
 
                 # Establish context
-                await self.context_manager.establish_context(
+                await self.context.establish_context(
                     task.task_id, {"task": task.model_dump(), "priority": priority}
                 )
 
@@ -220,12 +230,12 @@ class TaskOrchestratorService:
                 response = UserResponseMessage(**response_data)
                 task_id = response.task_id
 
-                if task_id not in self.active_tasks:
+                if task_id not in self._active_tasks:
                     logger.warning(f"Received response for unknown task: {task_id}")
                     await message.nack(requeue=False)
                     return
 
-                task = self.active_tasks[task_id]
+                task = self._task_handlers[task_id](response)
                 if task.status != TaskStatus.AWAITING_USER_INPUT:
                     logger.warning(
                         f"Received response for task not awaiting input: {task_id}"
@@ -297,7 +307,7 @@ class TaskOrchestratorService:
             )
 
             # Update context with planning status
-            await self.context_manager.update_context(
+            await self.context.update_context(
                 task.task_id,
                 {"status": "planning", "priority": priority}
             )
@@ -306,7 +316,7 @@ class TaskOrchestratorService:
 
         except Exception as e:
             # Update context with error
-            await self.context_manager.update_context(
+            await self.context.update_context(
                 task.task_id,
                 {"error": str(e), "status": "failed"}
             )
@@ -320,7 +330,7 @@ class TaskOrchestratorService:
         )
 
         # Update context
-        await self.context_manager.update_context(
+        await self.context.update_context(
             task.task_id,
             {"error": "Planning failed", "status": "failed"}
         )
@@ -368,7 +378,7 @@ class TaskOrchestratorService:
             )
 
             # Update context with executing status
-            await self.context_manager.update_context(
+            await self.context.update_context(
                 task.task_id,
                 {"status": "executing", "priority": priority}
             )
@@ -377,7 +387,7 @@ class TaskOrchestratorService:
 
         except Exception as e:
             # Update context with error
-            await self.context_manager.update_context(
+            await self.context.update_context(
                 task.task_id,
                 {"error": str(e), "status": "failed"}
             )
@@ -391,7 +401,7 @@ class TaskOrchestratorService:
         )
 
         # Update context
-        await self.context_manager.update_context(
+        await self.context.update_context(
             task.task_id,
             {"error": "Execution failed", "status": "failed"}
         )
@@ -408,29 +418,28 @@ class TaskOrchestratorService:
             routing_key="task.events",
         )
 
-    def _is_task_timed_out(self, task: Task) -> bool:
+    def _is_task_timed_out(self, task: dict) -> bool:
         """Check if a task has timed out."""
-        if not task.metadata.created_at or not task.metadata.timeout:
+        if not task.get("created_at"):
             return False
-            
-        time_since_creation = datetime.now(UTC) - task.metadata.created_at
-        return time_since_creation.total_seconds() > task.metadata.timeout
+        timeout = self.config.get("task", {}).get("timeout", settings.TASK_TIMEOUT)
+        return (datetime.now(UTC) - task["created_at"]).total_seconds() > timeout
 
     async def _handle_task_timeout(self, task_id: str) -> None:
         """Handle task timeout."""
-        if task_id not in self.active_tasks:
+        if task_id not in self._active_tasks:
             return
             
-        task = self.active_tasks[task_id]
+        task = self._task_handlers[task_id](None)
         if not self._is_task_timed_out(task):
             return
             
         # Calculate time elapsed since task creation
-        time_elapsed = datetime.now(UTC) - task.metadata.created_at
+        time_elapsed = datetime.now(UTC) - task["created_at"]
         
         # Update task status to failed
-        task.status = TaskStatus.FAILED
-        task.result = {
+        task["status"] = TaskStatus.FAILED
+        task["result"] = {
             "error": f"Task timed out after {time_elapsed.total_seconds()} seconds"
         }
         
@@ -438,8 +447,8 @@ class TaskOrchestratorService:
         await self.db.update_task(task)
         
         # Update context
-        await self.context_manager.update_context(
-            task.task_id,
+        await self.context.update_context(
+            task_id,
             {
                 "status": "failed",
                 "error": f"Task timed out after {time_elapsed.total_seconds()} seconds"
@@ -447,7 +456,7 @@ class TaskOrchestratorService:
         )
         
         # Remove from active tasks
-        del self.active_tasks[task_id]
+        self._active_tasks.remove(task_id)
 
     async def _update_task_status(
         self,
@@ -456,19 +465,19 @@ class TaskOrchestratorService:
         result: Optional[Dict[str, Any]] = None
     ) -> None:
         """Update task status."""
-        if task_id not in self.active_tasks:
+        if task_id not in self._active_tasks:
             raise ValueError(f"Task {task_id} not found")
             
-        task = self.active_tasks[task_id]
-        task.status = status
+        task = self._task_handlers[task_id](None)
+        task["status"] = status
         if result:
-            task.result = result
+            task["result"] = result
             
         # Update task in database
         await self.db.update_task(task)
         
         # Update task metadata
-        task.metadata.updated_at = datetime.now(UTC)
+        task["metadata"]["updated_at"] = datetime.now(UTC)
 
         # Publish status update
         status_update = TaskStatusUpdateMessage(
@@ -510,7 +519,7 @@ class TaskOrchestratorService:
             if task_id in self._task_timeouts:
                 self._task_timeouts[task_id].cancel()
                 del self._task_timeouts[task_id]
-            del self.active_tasks[task_id]
+            del self._task_handlers[task_id]
             if task_id in self._task_metrics:
                 del self._task_metrics[task_id]
 
@@ -519,14 +528,26 @@ class TaskOrchestratorService:
                 if task_id in queue:
                     queue.remove(task_id)
 
+    async def _process_tasks(self):
+        """Process tasks in the queue."""
+        while self._running:
+            try:
+                task = await self._task_queue.get()
+                await self._handle_new_task(task)
+            except Exception as e:
+                logger.error(f"Error processing task: {str(e)}")
+            finally:
+                await asyncio.sleep(0.1)
+
 
 async def main():
     """Main entry point for the service."""
     service = TaskOrchestratorService()
     try:
+        await service.initialize()
         await service.start()
         # Keep the service running
-        while True:
+        while service._running:
             await asyncio.sleep(1)
     except KeyboardInterrupt:
         logger.info("Shutting down service...")

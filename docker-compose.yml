@@ -36,24 +36,35 @@ services:
       timeout: 5s
       retries: 5
 
+  config_manager:
+    build:
+      context: .
+      dockerfile: services/config_manager_service/Dockerfile
+    container_name: devfusion_config_manager
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/app/config
+      - ./services/config_manager_service:/app/services/config_manager_service
+      - ./shared:/app/shared
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - devfusion_network
+
   task_orchestrator:
     build:
       context: .
       dockerfile: services/task_orchestrator_service/Dockerfile
     container_name: devfusion_task_orchestrator
-    environment:
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-      - SERVICE_VERSION=1.0.0
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=devfusion
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
     depends_on:
       rabbitmq:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      config_manager:
+        condition: service_started
     volumes:
       - ./services/task_orchestrator_service:/app/services/task_orchestrator_service
       - ./shared:/app/shared

@@ -1,8 +1,9 @@
 import asyncpg
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import select, update
+from sqlalchemy.orm import sessionmaker
 
 from shared.db_models.task_models import TaskRecord, TaskModel, TaskEventModel, Task, TaskMetadata
 from shared.common_utils import logger
@@ -11,24 +12,59 @@ from shared.common_utils import logger
 class DatabaseInterface:
     """Interface for database operations."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, connection_params: dict):
         """Initialize database interface."""
-        self.session = session
+        self.connection_params = connection_params
+        self.pool = None
+        self.engine = None
+        self.session_factory = None
+        self.session = None
 
     async def connect(self):
-        """Create connection pool."""
+        """Create database connection pool"""
         try:
-            self.pool = await asyncpg.create_pool(**self.connection_params)
+            # Create async engine
+            database_url = f"postgresql+asyncpg://{self.connection_params['user']}:{self.connection_params['password']}@{self.connection_params['host']}:{self.connection_params['port']}/{self.connection_params.get('database', self.connection_params.get('name', 'postgres'))}"
+            self.engine = create_async_engine(
+                database_url,
+                pool_size=5,
+                max_overflow=10,
+                echo=False
+            )
+            self.async_session = sessionmaker(
+                self.engine,
+                class_=AsyncSession,
+                expire_on_commit=False
+            )
             logger.info("Database connection pool created successfully")
         except Exception as e:
             logger.error(f"Failed to create database connection pool: {str(e)}")
             raise
 
     async def close(self):
-        """Close connection pool."""
-        if self.pool:
-            await self.pool.close()
-            logger.info("Database connection pool closed")
+        """Close database connection pool"""
+        try:
+            if self.session:
+                await self.session.close()
+                self.session = None
+            
+            if self.engine:
+                await self.engine.dispose()
+                self.engine = None
+                
+            logger.info("Database connection pool closed successfully")
+        except Exception as e:
+            logger.error(f"Failed to close database connection pool: {str(e)}")
+            raise
+
+    async def __aenter__(self):
+        """Context manager entry"""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        await self.close()
 
     async def create_task(self, task: Task) -> TaskModel:
         """Create a new task in the database."""

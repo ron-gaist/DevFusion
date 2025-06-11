@@ -1,53 +1,95 @@
 import os
-from typing import Optional
-from dotenv import load_dotenv
-
+from typing import Optional, Dict, Any, List
+import httpx
+from pydantic_settings import BaseSettings
+from pydantic import Field
 from shared.message_schemas.task_status import TaskStatus
 from shared.message_schemas.task_priority import TaskPriority
 
-class OrchestratorSettings:
-    def __init__(self):
-        # Load environment variables from .env file
-        load_dotenv()
-        
-        # Service Configuration
-        self.SERVICE_NAME = "task_orchestrator_service"
-        self.SERVICE_VERSION = "1.0.0"
+class OrchestratorSettings(BaseSettings):
+    # Service settings
+    SERVICE_NAME: str = "task_orchestrator_service"
+    SERVICE_VERSION: str = "1.0.0"
+    SERVICE_DESCRIPTION: str = "Task Orchestrator Service for DevFusion"
+    
+    # RabbitMQ settings
+    RABBITMQ_HOST: str = "localhost"
+    RABBITMQ_PORT: int = 5672
+    RABBITMQ_USER: str = "guest"
+    RABBITMQ_PASSWORD: str = "guest"
+    RABBITMQ_VHOST: str = "/"
+    RABBITMQ_EXCHANGE: str = "devfusion"
+    RABBITMQ_QUEUE: str = "task_orchestrator"
+    RABBITMQ_BINDING_KEYS: List[str] = ["task.*"]
+    
+    # Task settings
+    MAX_CONCURRENT_TASKS: int = 10
+    TASK_TIMEOUT: int = 3600  # 1 hour in seconds
+    
+    # Database settings
+    DB_HOST: str = "localhost"
+    DB_PORT: int = 5432
+    DB_USER: str = "postgres"
+    DB_PASSWORD: str = "postgres"
+    DB_NAME: str = "devfusion"
+    
+    # API settings
+    API_HOST: str = "localhost"
+    API_PORT: int = 8000
+    
+    # Logging settings
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    
+    # Config service settings
+    CONFIG_SERVICE_URL: str = "http://config_manager:8000"
+    CONFIG_SERVICE_TIMEOUT: int = 5
+    
+    # Override mechanism for testing
+    _config_override: Optional[Dict[str, Any]] = None
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not self._config_override:
+            self._load_config()
+    
+    def _load_config(self) -> None:
+        """Load configuration from config service."""
+        try:
+            response = httpx.get(
+                f"{self.CONFIG_SERVICE_URL}/api/v1/config/service/task_orchestrator_service",
+                timeout=self.CONFIG_SERVICE_TIMEOUT
+            )
+            if response.status_code == 200:
+                config_data = response.json()
+                for key, value in config_data.items():
+                    if hasattr(self, key):
+                        setattr(self, key, value)
+        except Exception as e:
+            # Log the error but don't raise it - use default values
+            print(f"Warning: Failed to load configuration from config service: {str(e)}")
+    
+    @classmethod
+    def override_config(cls, config: Dict[str, Any]) -> None:
+        """Override configuration for testing purposes."""
+        cls._config_override = config
+    
+    @classmethod
+    def reset_config(cls) -> None:
+        """Reset configuration override."""
+        cls._config_override = None
 
-        # RabbitMQ Configuration
-        self.RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
-        self.RABBITMQ_EXCHANGE = os.getenv("RABBITMQ_EXCHANGE", "devfusion.tasks")
-        self.RABBITMQ_QUEUE = os.getenv("RABBITMQ_QUEUE", "task_orchestrator_service.new_tasks")
-        self.RABBITMQ_BINDING_KEYS = os.getenv("RABBITMQ_BINDING_KEYS", "task.new").split(",")
+    @property
+    def RABBITMQ_URL(self) -> str:
+        return f"amqp://{self.RABBITMQ_USER}:{self.RABBITMQ_PASSWORD}@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/{self.RABBITMQ_VHOST}"
 
-        # Task Configuration
-        self.MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "10"))
-        self.TASK_TIMEOUT = int(os.getenv("TASK_TIMEOUT", "3600"))  # 1 hour in seconds
-
-        # Logging Configuration
-        self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-        self.LOG_FORMAT = os.getenv(
-            "LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-
-        # Database Configuration
-        self.DB_HOST = os.getenv("DB_HOST", "localhost")
-        self.DB_PORT = int(os.getenv("DB_PORT", "5432"))
-        self.DB_NAME = os.getenv("DB_NAME", "devfusion")
-        self.DB_USER = os.getenv("DB_USER", "postgres")
-        self.DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
-
-        # API Configuration
-        self.API_HOST = os.getenv("API_HOST", "0.0.0.0")
-        self.API_PORT = int(os.getenv("API_PORT", "8000"))
-
-    def get_database_url(self) -> str:
-        """Get the database URL from environment variables."""
+    @property
+    def DATABASE_URL(self) -> str:
         return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
-    def get_api_url(self) -> str:
-        """Get the API URL from environment variables."""
+    @property
+    def API_URL(self) -> str:
         return f"http://{self.API_HOST}:{self.API_PORT}"
 
-# Create a singleton instance
+# Global settings instance
 settings = OrchestratorSettings() 

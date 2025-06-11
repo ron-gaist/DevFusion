@@ -1,0 +1,28 @@
+version: "1.0.0"
+service_name: "task_orchestrator_service"
+service_version: "1.0.0"
+
+rabbitmq:
+  url: "amqp://guest:guest@rabbitmq:5672/"
+  exchange: "devfusion.tasks"
+  queue: "task_orchestrator_service.new_tasks"
+  binding_keys: ["task.new"]
+
+task:
+  max_concurrent_tasks: 10
+  timeout: 3600  # 1 hour in seconds
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "devfusion"
+  user: "postgres"
+  password: "postgres"
+
+api:
+  host: "0.0.0.0"
+  port: 8000 
